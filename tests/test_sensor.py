@@ -107,10 +107,15 @@ class TestMopSensors:
         mock_coordinator.data["work_status"] = WORK_STATUS_DRYING_MOP
         assert SwitchBotMopDrying(mock_coordinator).is_on is True
 
-    def test_drying_on_from_error_code(self, mock_coordinator):
-        """Test drying is also reported via error_code 11."""
+    def test_error_code_does_not_imply_drying(self, mock_coordinator):
+        """Test drying is not inferred from an error code.
+
+        Code 11 was previously treated as "drying mop", but that was read from property
+        1019 (upgradeStatus) rather than the real error code, and 11 does not exist in
+        the S10 error enum at all.
+        """
         mock_coordinator.data["error_code"] = 11
-        assert SwitchBotMopDrying(mock_coordinator).is_on is True
+        assert SwitchBotMopDrying(mock_coordinator).is_on is False
 
     def test_drying_off_while_sweeping(self, mock_coordinator):
         """Test drying is off during normal cleaning."""

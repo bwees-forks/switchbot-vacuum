@@ -28,6 +28,7 @@ SwitchBot does not provide a public API for their robot vacuums. The official Sw
 - **Room-aware cleaning** — clean specific rooms by name or ID, with full control over mode, suction, water level, passes, and order
 - **Native area cleaning** — on Home Assistant 2026.8+ the vacuum's rooms map onto HA areas, so `vacuum.clean_area` and the dashboard's area picker work directly (S10 family only)
 - **Mop & sweep control** — dropdowns for clean type (`sweep`, `mop`, `sweep_mop`, `first_sweep_then_mop`), water level and passes, plus the same options per room clean
+- **Base station controls** — start/stop mop drying, trigger dust collection and mop wash
 - **Base station tracking** — dedicated mop drying and mop washing binary sensors, plus a status sensor that distinguishes drying, washing, dust collection and water refilling
 - **Automatic room discovery** — room names are downloaded from the vacuum's S3 map data every 24 hours
 - **Multi-device support** — if your account has multiple SwitchBot vacuums, the config flow lets you pick which one to add
@@ -76,6 +77,7 @@ The main entity (`vacuum.switchbot_vacuum`) provides:
 | **Start** | Start full cleaning |
 | **Stop / Pause** | Stop or pause current cleaning |
 | **Return to base** | Send vacuum to charging station |
+| **Locate** | Make the robot announce its position |
 | **Clean area** | Clean the rooms mapped to one or more HA areas — S10 family, HA 2026.8+ ([details](#area-cleaning)) |
 
 #### Extra attributes
@@ -116,31 +118,29 @@ The vacuum entity exposes additional attributes you can use in automations and t
 | `binary_sensor.*.problem` | Problem | ON when any error is active — simplest automation trigger |
 | `sensor.*.error` | Sensor | Current error type as a string (e.g. `stuck`, `clean_water_tank_empty`) or `none` |
 
-The error sensor state is one of:
+The error sensor reports a name drawn from the robot's own error enum. The codes group
+by range — see [the API reference](docs/switchbot-vacuum-api.md) for the full table:
 
-| State | Error code | Description |
-|-------|-----------|-------------|
-| `none` | 0 | No error |
-| `stuck` | 2000 | Robot is stuck |
-| `wheel_stuck` | 2001 | Wheel stuck or suspended |
-| `side_brush_stuck` | 2002 | Side brush tangled |
-| `main_brush_stuck` | 2003 | Main brush/roller tangled |
-| `bumper_stuck` | 2004 | Bumper stuck — check for debris |
-| `dust_bin_missing` | 2005 | Dust bin not installed |
-| `filter_clogged` | 2006 | Filter needs cleaning |
-| `cliff_sensor_error` | 2007 | Cliff/drop sensor error |
-| `low_battery` | 2008 | Battery too low to continue |
-| `charging_error` | 2009 | Cannot charge — check dock contacts |
-| `internal_error` | 2010 | Internal system error |
-| `laser_sensor_error` | 2011 | LDS/laser sensor error |
-| `path_blocked` | 2012 | Navigation error — cannot find path |
-| `clean_water_tank_empty` | 2728 | Clean water tank empty |
-| `dirty_water_tank_full` | 2739 | Dirty water tank full |
-| `dirty_water_tank_removed` | 2740 | Dirty water tank removed |
-| `fault` | — | Work status is fault but no specific error code |
-| `error_XXXX` | XXXX | Unknown code (logged as warning for discovery) |
+| Range | Meaning | Examples |
+|-------|---------|----------|
+| `0` | No error | `none` |
+| 1001–1003 | Robot hardware | `fan_exception`, `battery_exception` |
+| 2001–2048 | Robot faults | `device_stuck`, `wheel_lock`, `roller_lock`, `radar_covered`, `water_station_leak` |
+| 3002–3062 | Base station and consumables | `dust_bag_full`, `sewage_slop_tank_full`, `dust_cover_open`, `roller_missing` |
+| 4001–4029 | Power and scheduling | `clean_water_tank_shortage`, `low_power`, `charge_exception` |
+| — | Work status is fault with no specific code | `fault` |
+| `error_XXXX` | Unknown code, logged as a warning so it can be identified | |
+
+Codes `4011`–`4015` report a *skipped* task (do-not-disturb, low power, reservation)
+rather than a fault, so they do not trigger the problem binary sensor.
 
 Both entities expose `error_code` (raw integer) and `error_type`/`error_description` as extra attributes.
+
+> **Corrected in 0.8.0.** Earlier versions read property `1019`, which is actually
+> `upgradeStatus`, so the problem sensor never fired. The old code names (`stuck`,
+> `filter_clogged`, `low_battery` …) came from a different vendor's SDK and did not
+> match this hardware — for example `2008` is a missing dust box, not low battery.
+> If you have automations keyed on the old names, they need updating.
 
 ### Cleaning options
 
@@ -159,6 +159,25 @@ Suction is on the vacuum entity itself as the standard fan speed control.
 Changing one dropdown leaves the others alone — the integration reads the current mode
 and sends it back with only that field replaced, because the underlying command
 replaces the whole mode object.
+
+### Base station controls
+
+The base station's own tasks are exposed as controls (S10 family only):
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| `switch.*.mop_drying` | Switch | Start and stop mop drying |
+| `button.*.collect_dust` | Button | Empty the robot's bin into the station |
+| `button.*.wash_mop` | Button | Run a mop wash cycle |
+
+Dust collection and mop wash are buttons rather than switches because the API has no
+command to stop them once started — only drying can be cancelled.
+
+All three refuse to run while the station is already mid-cycle (washing, collecting
+sewage, filling water or collecting dust), matching the app, which greys the buttons out
+in those states. Drying and dust collection also need the robot to be on the dock.
+
+The vacuum entity also supports `vacuum.locate`, which makes the robot announce itself.
 
 ### Base station activity
 

@@ -22,10 +22,6 @@ from .const import (
 )
 from .coordinator import SwitchBotS10Coordinator
 
-# Error code 11 is reported while the base station dries the mop, in parallel with
-# work_status 20. Either one means drying is in progress.
-DRYING_ERROR_CODE = 11
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -96,10 +92,7 @@ class SwitchBotMopDrying(
     @property
     def is_on(self) -> bool:
         """Return True while the mop is being dried."""
-        return (
-            self.coordinator.data.get("work_status") == WORK_STATUS_DRYING_MOP
-            or self.coordinator.data.get("error_code") == DRYING_ERROR_CODE
-        )
+        return self.coordinator.data.get("work_status") == WORK_STATUS_DRYING_MOP
 
 
 class SwitchBotMopWashing(

@@ -21,6 +21,7 @@ from .const import (
     CLEAN_TYPES,
     CMD_CLEAN,
     CMD_CONTROL,
+    CMD_FIND_ROBOT,
     CMD_GO_CHARGE,
     DEVICE_TYPE_S10,
     DEVICE_TYPE_TO_MODEL,
@@ -174,6 +175,7 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
         | VacuumEntityFeature.FAN_SPEED
         | VacuumEntityFeature.SEND_COMMAND
         | VacuumEntityFeature.BATTERY
+        | VacuumEntityFeature.LOCATE
     )
     def __init__(self, coordinator: SwitchBotS10Coordinator) -> None:
         """Initialize."""
@@ -304,6 +306,13 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
         await self.coordinator.async_change_clean_mode(
             fan_level=FAN_SPEED_ALIASES.get(fan_speed.lower(), 1)
         )
+
+    async def async_locate(self, **kwargs: Any) -> None:
+        """Make the vacuum announce its position."""
+        if self._is_k10_family:
+            _LOGGER.warning("locate is only supported on the S10 family")
+            return
+        await self.coordinator.async_send_command(CMD_FIND_ROBOT, {})
 
     async def async_set_clean_mode(
         self,

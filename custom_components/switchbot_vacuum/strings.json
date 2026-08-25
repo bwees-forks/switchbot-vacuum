@@ -49,6 +49,19 @@
           "2": "2"
         }
       }
+    },
+    "button": {
+      "collect_dust": {
+        "name": "Collect Dust"
+      },
+      "wash_mop": {
+        "name": "Wash Mop"
+      }
+    },
+    "switch": {
+      "mop_drying": {
+        "name": "Mop Drying"
+      }
     }
   }
 }

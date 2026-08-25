@@ -60,6 +60,15 @@ CMD_CLEAN: Final = 1001
 CMD_GO_CHARGE: Final = 1022
 CMD_CONTROL: Final = 1009
 CMD_CHANGE_MODE: Final = 1043
+CMD_FIND_ROBOT: Final = 1019
+CMD_SELF_CLEANING: Final = 1039
+
+# Param 0 of CMD_SELF_CLEANING. Only these four values appear in the app; there is no
+# stop for dust collection or mop wash.
+SELF_CLEAN_MOP_WASH: Final = 1
+SELF_CLEAN_START_DRYING: Final = 2
+SELF_CLEAN_STOP_DRYING: Final = 3
+SELF_CLEAN_DUST_COLLECT: Final = 4
 
 # Work Status (property 1010), per SweeperUtil.getWorkStatusText in the app
 WORK_STATUS_STANDBY: Final = 1
@@ -74,8 +83,22 @@ WORK_STATUS_MOPPING: Final = 10
 WORK_STATUS_PAUSED: Final = 11
 WORK_STATUS_GO_CHARGE: Final = 15
 WORK_STATUS_WASHING_MOP: Final = 16
+WORK_STATUS_COLLECTING_SEWAGE: Final = 17
+WORK_STATUS_FILLING_WATER: Final = 18
 WORK_STATUS_DOCKING: Final = 19
+WORK_STATUS_COLLECTING_DUST: Final = 19
 WORK_STATUS_DRYING_MOP: Final = 20
+
+# The app greys out the base station buttons while the station is mid-cycle, because
+# the commands are rejected then.
+STATION_BUSY_STATUSES: Final = frozenset(
+    {
+        WORK_STATUS_WASHING_MOP,
+        WORK_STATUS_COLLECTING_SEWAGE,
+        WORK_STATUS_FILLING_WATER,
+        WORK_STATUS_COLLECTING_DUST,
+    }
+)
 
 # Human-readable names for property 1010, mirroring SweeperUtil.getWorkStatusText in
 # the app. Shared by the whole S10 family (S10 / S20 / S20 Pro).
@@ -116,11 +139,13 @@ WORK_STATUS_NAMES: Final[dict[int, str]] = {
     37: "going_to_water_station",
 }
 
-# Properties
-PROP_ONLINE: Final = 1003
+# Properties. IDs verified against the property map in the Sweeper RN bundle; see
+# docs/switchbot-vacuum-api.md. 1003 is power and 1019 is upgradeStatus — both were
+# previously used here by mistake, which left the error sensor reading the wrong value.
+PROP_ONLINE: Final = 66
 PROP_BATTERY: Final = 1004
 PROP_WORK_STATUS: Final = 1010
-PROP_ERROR_CODE: Final = 1019
+PROP_ERROR_CODE: Final = 1011
 PROP_S3_BUCKET: Final = 1028
 PROP_AWS_REGION: Final = 1031
 PROP_TASK_INFO: Final = 1032
@@ -189,35 +214,113 @@ CLEAN_PASS_LIST: Final = list(CLEAN_PASSES.keys())
 # Work status indicating fault (S10)
 WORK_STATUS_FAULT: Final = 13
 
-# Error codes (property 1019) — from APK feature_sweeper (sweeperErrorEnd_XXXX)
-# Codes with known descriptions from APK string analysis; unknown codes logged for discovery.
+# Error codes (property 1011), transcribed from the ErrorCode enum in the Sweeper RN
+# bundle. See docs/switchbot-vacuum-api.md. The previous table mapped 2000-2012 to
+# Qihoo 360 SDK meanings, which belong to a different device family entirely.
 ERROR_CODES: Final[dict[int, str]] = {
     0: "none",
-    # Low codes — operational status indicators, NOT actual errors
-    11: "drying_mop",                 # Base station drying mop (normal operation)
-    # sweeperErrorEnd_2000 – 2012: Qihoo 360 SDK error codes
-    2000: "stuck",                      # Robot is stuck
-    2001: "wheel_stuck",                # Wheel stuck or suspended
-    2002: "side_brush_stuck",           # Side brush tangled/stuck
-    2003: "main_brush_stuck",           # Main brush/roller tangled/stuck
-    2004: "bumper_stuck",               # Bumper stuck — check for debris
-    2005: "dust_bin_missing",           # Dust bin not installed
-    2006: "filter_clogged",             # Filter needs cleaning
-    2007: "cliff_sensor_error",         # Cliff/drop sensor error
-    2008: "low_battery",               # Battery too low to continue
-    2009: "charging_error",             # Cannot charge — check dock contacts
-    2010: "internal_error",             # Internal system error
-    2011: "laser_sensor_error",         # LDS/laser sensor error
-    2012: "path_blocked",              # Cannot find path / navigation error
-    # S10-specific base station errors
-    2728: "clean_water_tank_empty",     # Clean water tank empty
-    2739: "dirty_water_tank_full",      # Dirty water tank full
-    2740: "dirty_water_tank_removed",   # Dirty water tank removed
+    # 1xxx — robot hardware
+    1001: "fan_exception",
+    1002: "unknown_hardware_failure",
+    1003: "battery_exception",
+    # 2xxx — robot faults
+    2001: "water_station_leak",
+    2002: "cliff_sensor_anomaly",
+    2003: "device_vacant",
+    2004: "roller_lock",
+    2005: "wheel_lock",
+    2006: "lcd_lock",
+    2007: "side_brush_lock",
+    2008: "dust_box_not_installed",
+    2009: "device_stuck",
+    2010: "device_tilted",
+    2011: "bumper_strip_lock",
+    2012: "radar_locked",
+    2013: "radar_covered",
+    2014: "chargeback_sensor_anomaly",
+    2015: "carpet_detection_sensor_anomaly",
+    2016: "obstacle_avoidance_sensor_anomaly",
+    2017: "wall_sensor_anomaly",
+    2018: "cannot_find_dust_station",
+    2019: "dust_station_blocked",
+    2020: "host_in_forbidden_area",
+    2022: "cannot_find_water_station",
+    2024: "systems_error",
+    2025: "roller_up_down_lock",
+    2026: "water_station_communication_failure",
+    2027: "dust_station_communication_failure",
+    2028: "connect_failed",
+    2030: "pose_lost",
+    2031: "cannot_start_in_carpeted_area",
+    2032: "no_map_charge",
+    2033: "cannot_find_humidifier",
+    2034: "docking_station_fail",
+    2035: "docking_station_fail",
+    2036: "docking_station_fail",
+    2037: "no_open",
+    2038: "combined_base_error",
+    2039: "combined_base_error",
+    2046: "base_version_low",
+    2047: "location_fail_map_not_full",
+    2048: "current_map_not_change_base",
+    # 3xxx — base station and consumables
+    3002: "area_cannot_be_reached",
+    3003: "filling_water_exception",
+    3004: "sewage_exception",
+    3005: "roller_missing",
+    3006: "slop_box_missing",
+    3007: "slop_tank_missing",
+    3008: "dust_bag_not_installed",
+    3009: "dust_cover_open",
+    3010: "dust_bag_full",
+    3011: "install_external_sewage_slop_tank",
+    3012: "install_external_sewage_purging_tank",
+    3013: "sewage_slop_tank_full",
+    3014: "sewage_purging_tank_shortage",
+    3015: "high_drying_temperature",
+    3016: "camera_exception",
+    3017: "host_blocked",
+    3018: "unable_to_water_station",
+    3019: "unable_to_dust_station",
+    3020: "unable_to_humidifier_station",
+    3021: "clean_water_pump_cannot_work",
+    3062: "water_base_error",
+    # 4xxx — power and scheduling
+    4001: "clean_water_tank_shortage",
+    4002: "low_power_shut_down",
+    4004: "low_power",
+    4005: "charge_exception",
+    4006: "dust_station_pair_failed",
+    4007: "dust_station_bind_failed",
+    4008: "water_station_pair_failed",
+    4009: "water_station_bind_failed",
+    4010: "water_station_low_power",
+    4011: "task_skipped_do_not_disturb",
+    4012: "task_skipped_low_power",
+    4013: "task_skipped_reserved",
+    4014: "combined_base_error",
+    4015: "task_skipped_reserved",
+    4018: "combined_base_error",
+    4019: "combined_base_error",
+    4020: "combined_base_error",
+    4021: "combined_base_error",
+    4028: "water_base_error",
+    4029: "sweeper_low_power",
 }
+ERROR_CODES.update(
+    {code: "water_station_communication_error" for code in range(3022, 3032)}
+)
+ERROR_CODES.update(
+    {code: "dust_station_communication_error" for code in range(3032, 3039)}
+)
+ERROR_CODES.update(
+    {code: "humidifier_communication_error" for code in range(3039, 3041)}
+)
+ERROR_CODES.update({code: "combined_base_error" for code in range(3041, 3062)})
 
-# Status codes in PROP_ERROR_CODE that are NOT actual errors (normal operation).
-# Only codes NOT in this set should trigger the problem binary sensor.
-NON_ERROR_STATUS_CODES: Final = frozenset({0, 11})
+# Codes reporting a skipped task rather than a fault, so they must not light up the
+# problem binary sensor.
+NON_ERROR_STATUS_CODES: Final = frozenset({0, 4011, 4012, 4013, 4015})
 
 # Separate operational failure reasons (from APK operateFail* strings)
 # These appear as transient conditions checked before/during commands.
