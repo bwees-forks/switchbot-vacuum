@@ -7,11 +7,24 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .const import CONF_DEVICE_MAC, CONF_PASSWORD, CONF_PRODUCT_KEY, CONF_USERNAME, DOMAIN, DEVICE_TYPE_S10
 from .coordinator import SwitchBotS10Coordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _FlowEntry:
+    """Stands in for a ConfigEntry during the config flow, before one exists.
+
+    The coordinator only needs credentials to log in and list devices, but it reads
+    the same attributes it would on a real entry, so both must be present.
+    """
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.data = data
+        self.options: dict[str, Any] = {}
 
 USER_SCHEMA = vol.Schema(
     {
@@ -44,12 +57,15 @@ class SwitchBotS10ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             try:
                 coordinator = SwitchBotS10Coordinator(self.hass, None)
-                coordinator.entry = type("Entry", (), {"data": user_input})()
+                coordinator.entry = _FlowEntry(user_input)
                 await coordinator.async_login()
                 self._devices = await coordinator.async_discover_devices()
-            except Exception:
+            except ConfigEntryAuthFailed:
                 _LOGGER.exception("Authentication failed")
                 errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Could not reach the SwitchBot API")
+                errors["base"] = "cannot_connect"
             else:
                 if not self._devices:
                     errors["base"] = "no_devices"

@@ -4,9 +4,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.switchbot_vacuum.config_flow import SwitchBotS10ConfigFlow
-from custom_components.switchbot_vacuum.const import DOMAIN
+from custom_components.switchbot_vacuum.coordinator import SwitchBotS10Coordinator
 
 
 @pytest.fixture(autouse=True)
@@ -76,12 +77,14 @@ class TestUserStep:
 
     @pytest.mark.asyncio
     async def test_auth_error(self, mock_hass):
-        """Test config flow handles auth failure."""
+        """Test config flow reports bad credentials as an auth failure."""
         with patch(
             "custom_components.switchbot_vacuum.config_flow.SwitchBotS10Coordinator"
         ) as mock_coord_cls:
             mock_coord = AsyncMock()
-            mock_coord.async_login = AsyncMock(side_effect=Exception("auth failed"))
+            mock_coord.async_login = AsyncMock(
+                side_effect=ConfigEntryAuthFailed("Login failed")
+            )
             mock_coord_cls.return_value = mock_coord
 
             flow = _make_flow(mock_hass)
@@ -91,6 +94,44 @@ class TestUserStep:
 
             assert result["type"] == "form"
             assert result["errors"] == {"base": "invalid_auth"}
+
+    @pytest.mark.asyncio
+    async def test_non_auth_error_is_not_reported_as_auth(self, mock_hass):
+        """Test other failures are not misreported as bad credentials."""
+        with patch(
+            "custom_components.switchbot_vacuum.config_flow.SwitchBotS10Coordinator"
+        ) as mock_coord_cls:
+            mock_coord = AsyncMock()
+            mock_coord.async_login = AsyncMock(side_effect=OSError("network down"))
+            mock_coord_cls.return_value = mock_coord
+
+            flow = _make_flow(mock_hass)
+            result = await flow.async_step_user(
+                {"username": "test@test.com", "password": "testpass"}
+            )
+
+            assert result["type"] == "form"
+            assert result["errors"] == {"base": "cannot_connect"}
+
+    @pytest.mark.asyncio
+    async def test_builds_real_coordinator_before_login(self, mock_hass):
+        """Test the flow can construct the real coordinator, which has no entry yet.
+
+        Regression: the coordinator read entry.options in __init__ while the flow passed
+        entry=None, so every login crashed and was reported as invalid_auth.
+        """
+        with patch.object(
+            SwitchBotS10Coordinator, "async_login", AsyncMock()
+        ), patch.object(
+            SwitchBotS10Coordinator, "async_discover_devices", AsyncMock(return_value=[])
+        ):
+            flow = _make_flow(mock_hass)
+            result = await flow.async_step_user(
+                {"username": "test@test.com", "password": "testpass"}
+            )
+
+            # No devices, but crucially not invalid_auth from a constructor crash.
+            assert result["errors"] == {"base": "no_devices"}
 
     @pytest.mark.asyncio
     async def test_no_devices_error(self, mock_hass):

@@ -84,8 +84,10 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
         self.user_id: str | None = None
         self._uuid: str = str(uuid.uuid4())
         self._token_expiry: float = 0
-        # Restore rooms from the options cache so they survive HA restarts.
-        cached: Any = entry.options.get(CONF_CACHED_ROOMS, {})
+        # Restore rooms from the options cache so they survive HA restarts. The config
+        # flow builds a coordinator before an entry exists, so there is nothing to
+        # restore in that case.
+        cached: Any = entry.options.get(CONF_CACHED_ROOMS, {}) if entry else {}
         self._rooms: dict[str, str] = cached if isinstance(cached, dict) else {}
         self._last_room_refresh: float = 0
 
