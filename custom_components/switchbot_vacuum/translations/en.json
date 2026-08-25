@@ -11,7 +11,7 @@
       },
       "device": {
         "title": "Select Device",
-        "description": "Multiple S10 vacuums found. Select the one to add.",
+        "description": "Multiple SwitchBot vacuums found. Select the one to add.",
         "data": {
           "device_mac": "Device"
         }
