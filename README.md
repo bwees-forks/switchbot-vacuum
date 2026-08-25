@@ -1,6 +1,20 @@
 # SwitchBot Vacuum for Home Assistant
 
-Custom [HACS](https://hacs.xyz/) integration for SwitchBot robot vacuums (S10 and compatible models) in Home Assistant.
+Custom [HACS](https://hacs.xyz/) integration for SwitchBot robot vacuums (S10, S20, S20 Pro, K10+, K10+ Pro) in Home Assistant.
+
+## Supported models
+
+| Model | Device type | Room cleaning | Mop / water control |
+|---|---|---|---|
+| Floor Cleaning Robot S10 | `WoSweeperOrigin` | ✅ | ✅ |
+| Floor Cleaning Robot S20 | `W1106000` | ✅ | ✅ |
+| Floor Cleaning Robot S20 Pro | `W1107000` | ✅ | ✅ |
+| Mini Robot Vacuum K10+ | `WoSweeperMini` | ❌ ([why](#k10-room-cleaning--not-supported)) | ❌ |
+| Mini Robot Vacuum K10+ Pro | `WoSweeperMiniPro` | ❌ | ❌ |
+
+The S20 and S20 Pro speak the same cloud protocol as the S10 — the app routes all three
+through the same device model, shadow properties and command IDs — so they get the full
+S10 feature set, including per-room cleaning and mop control.
 
 ## Why this exists
 
@@ -12,6 +26,8 @@ SwitchBot does not provide a public API for their robot vacuums. The official Sw
 - **Error detection** — error sensor with specific error types (stuck, water tank empty, brush tangled, etc.) and a problem binary sensor for easy automations
 - **Room sensor entities** — one per room discovered from the vacuum's map
 - **Room-aware cleaning** — clean specific rooms by name or ID, with full control over mode, suction, water level, passes, and order
+- **Mop & sweep control** — pick `sweep`, `mop`, `sweep_mop` or `first_sweep_then_mop`, plus suction and water level, as a persistent default or per room clean
+- **Base station tracking** — dedicated mop drying and mop washing binary sensors, plus a status sensor that distinguishes drying, washing, dust collection and water refilling
 - **Automatic room discovery** — room names are downloaded from the vacuum's S3 map data every 24 hours
 - **Multi-device support** — if your account has multiple SwitchBot vacuums, the config flow lets you pick which one to add
 - **Force refresh service** — manually re-download room data and device status on demand
@@ -67,7 +83,7 @@ The vacuum entity exposes additional attributes you can use in automations and t
 | Attribute | Example | Description |
 |-----------|---------|-------------|
 | `water_level` | `1` | Current water output level (1–3) |
-| `clean_type` | `sweep_mop` | Current mode: `sweep`, `mop`, or `sweep_mop` |
+| `clean_type` | `sweep_mop` | Current mode: `sweep`, `mop`, `sweep_mop`, or `first_sweep_then_mop` |
 | `times` | `1` | Number of cleaning passes |
 | `last_clean_area` | `45` | Area cleaned in last session (m²) |
 | `last_clean_time` | `30` | Duration of last session (minutes) |
@@ -124,6 +140,51 @@ The error sensor state is one of:
 
 Both entities expose `error_code` (raw integer) and `error_type`/`error_description` as extra attributes.
 
+### Base station activity
+
+The vacuum entity reports every base station activity as `docked`, which makes drying
+indistinguishable from charging. These entities keep the distinction (S10 family only):
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| `binary_sensor.*.mop_drying` | Binary sensor | ON while the base station is drying the mop |
+| `binary_sensor.*.mop_washing` | Binary sensor | ON while the base station is washing the mop |
+| `sensor.*.status` | Sensor | Raw work status name — see below |
+
+The status sensor reports one of: `standby`, `charging`, `charge_done`, `launching`,
+`wetting_mop`, `exploring`, `relocating`, `sweeping_mopping`, `sweeping`, `mopping`,
+`paused`, `escaping_trap`, `fault`, `backing_to_wash_mop`, `backing_to_charge`,
+`deeply_washing_mop`, `collecting_sewage`, `filling_clean_water`, `collecting_dust`,
+`drying_mop`, `sleeping`, `configuring`, `remote_control`, `backing_to_base`,
+`backing_to_shut_down`, `going_to_water_station`, `flushing_strainer`, `adding_water`,
+`firmware_upgrading`, `scanning`, `water_station_charging`, `unknown`.
+
+**Triggering on mop drying:**
+
+```yaml
+automation:
+  - alias: "Notify when mop drying starts"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.switchbot_vacuum_mop_drying
+        to: "on"
+    action:
+      - service: notify.mobile_app
+        data:
+          message: "Mop drying has started"
+
+  - alias: "Notify when mop drying finishes"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.switchbot_vacuum_mop_drying
+        from: "on"
+        to: "off"
+    action:
+      - service: notify.mobile_app
+        data:
+          message: "Mop is dry"
+```
+
 ### Room sensors
 
 Each room discovered from the vacuum's map gets a sensor entity (e.g. `sensor.kitchen`, `sensor.bedroom`). The sensor value is the room name, and the `room_id` attribute contains the internal ID (e.g. `ROOM_013`).
@@ -158,11 +219,34 @@ data:
 | Parameter | Required | Default | Values |
 |-----------|----------|---------|--------|
 | `rooms` | yes | — | List of room names or IDs (can mix) |
-| `mode` | no | `sweep_mop` | `sweep`, `mop`, `sweep_mop` |
+| `mode` | no | `sweep_mop` | `sweep`, `mop`, `sweep_mop`, `first_sweep_then_mop` |
 | `fan_level` | no | `1` | 1 (quiet), 2 (standard), 3 (strong), 4 (max) |
 | `water_level` | no | `1` | 1 (low), 2 (medium), 3 (high) |
 | `times` | no | `1` | 1 or 2 passes |
 | `force_order` | no | `true` | Clean rooms in the specified order |
+
+### `switchbot_vacuum.set_clean_mode`
+
+Set the sweep/mop type, suction and water level used by subsequent whole-house cleans
+(`vacuum.start`). Omitted fields keep their current value. S10 family only.
+
+```yaml
+service: switchbot_vacuum.set_clean_mode
+target:
+  entity_id: vacuum.switchbot_vacuum
+data:
+  mode: "first_sweep_then_mop"
+  water_level: 3
+```
+
+| Parameter | Required | Values |
+|-----------|----------|--------|
+| `mode` | no | `sweep`, `mop`, `sweep_mop`, `first_sweep_then_mop` |
+| `fan_level` | no | 1 (quiet), 2 (standard), 3 (strong), 4 (max) |
+| `water_level` | no | 1 (low), 2 (medium), 3 (high) |
+| `times` | no | 1 or 2 passes |
+
+Suction alone can also be set with the standard `vacuum.set_fan_speed` service.
 
 ### `switchbot_vacuum.force_refresh`
 

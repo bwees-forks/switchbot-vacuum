@@ -16,12 +16,24 @@ CLIENT_ID: Final = "5nnwmhmsa9xxskm14hd85lm9bm"
 APP_VERSION: Final = "8.6.1"
 API_TIMEOUT: Final = 30
 DEVICE_TYPE_S10: Final = "WoSweeperOrigin"
+DEVICE_TYPE_S20: Final = "W1106000"
+DEVICE_TYPE_S20PRO: Final = "W1107000"
 DEVICE_TYPE_K10: Final = "WoSweeperMini"
 DEVICE_TYPE_K10PRO: Final = "WoSweeperMiniPro"
-SUPPORTED_DEVICE_TYPES: Final = {DEVICE_TYPE_S10, DEVICE_TYPE_K10, DEVICE_TYPE_K10PRO}
+
+# The S20/S20 Pro are protocol-identical to the S10: the app routes all three to the
+# same WoSweeperDevice model and "com.switch.bot.sweeper" module, and exposes the same
+# shadow properties, function IDs and scene actions for each.
+S10_FAMILY_DEVICE_TYPES: Final = frozenset(
+    {DEVICE_TYPE_S10, DEVICE_TYPE_S20, DEVICE_TYPE_S20PRO}
+)
+K10_FAMILY_DEVICE_TYPES: Final = frozenset({DEVICE_TYPE_K10, DEVICE_TYPE_K10PRO})
+SUPPORTED_DEVICE_TYPES: Final = S10_FAMILY_DEVICE_TYPES | K10_FAMILY_DEVICE_TYPES
 
 DEVICE_TYPE_TO_MODEL: Final = {
     DEVICE_TYPE_S10: "Floor Cleaning Robot S10",
+    DEVICE_TYPE_S20: "Floor Cleaning Robot S20",
+    DEVICE_TYPE_S20PRO: "Floor Cleaning Robot S20 Pro",
     DEVICE_TYPE_K10: "Mini Robot Vacuum K10+",
     DEVICE_TYPE_K10PRO: "Mini Robot Vacuum K10+ Pro",
 }
@@ -49,18 +61,60 @@ CMD_GO_CHARGE: Final = 1022
 CMD_CONTROL: Final = 1009
 CMD_CHANGE_MODE: Final = 1043
 
-# Work Status
+# Work Status (property 1010), per SweeperUtil.getWorkStatusText in the app
 WORK_STATUS_STANDBY: Final = 1
 WORK_STATUS_CHARGING: Final = 2
 WORK_STATUS_CHARGE_DONE: Final = 3
-WORK_STATUS_PAUSED: Final = 4
-WORK_STATUS_GO_CHARGE: Final = 5
-WORK_STATUS_RETURNING: Final = 7
+WORK_STATUS_LAUNCHING: Final = 4
+WORK_STATUS_WETTING_MOP: Final = 5
+WORK_STATUS_RELOCATING: Final = 7
 WORK_STATUS_CLEANING: Final = 8
-WORK_STATUS_CLEANING_ROOMS: Final = 9
-WORK_STATUS_PAUSED_2: Final = 11
-WORK_STATUS_GO_CHARGE_2: Final = 15
+WORK_STATUS_SWEEPING: Final = 9
+WORK_STATUS_MOPPING: Final = 10
+WORK_STATUS_PAUSED: Final = 11
+WORK_STATUS_GO_CHARGE: Final = 15
+WORK_STATUS_WASHING_MOP: Final = 16
 WORK_STATUS_DOCKING: Final = 19
+WORK_STATUS_DRYING_MOP: Final = 20
+
+# Human-readable names for property 1010, mirroring SweeperUtil.getWorkStatusText in
+# the app. Shared by the whole S10 family (S10 / S20 / S20 Pro).
+WORK_STATUS_NAMES: Final[dict[int, str]] = {
+    1: "standby",
+    2: "charging",
+    3: "charge_done",
+    4: "launching",
+    5: "wetting_mop",
+    6: "exploring",
+    7: "relocating",
+    8: "sweeping_mopping",
+    9: "sweeping",
+    10: "mopping",
+    11: "paused",
+    12: "escaping_trap",
+    13: "fault",
+    14: "backing_to_wash_mop",
+    15: "backing_to_charge",
+    16: "deeply_washing_mop",
+    17: "collecting_sewage",
+    18: "filling_clean_water",
+    19: "collecting_dust",
+    20: "drying_mop",
+    21: "sleeping",
+    22: "configuring",
+    23: "remote_control",
+    24: "backing_to_base",
+    25: "backing_to_shut_down",
+    26: "going_to_water_station",
+    27: "flushing_strainer",
+    29: "adding_water",
+    30: "adding_water",
+    31: "firmware_upgrading",
+    32: "paused",
+    35: "scanning",
+    36: "water_station_charging",
+    37: "going_to_water_station",
+}
 
 # Properties
 PROP_ONLINE: Final = 1003
@@ -105,10 +159,17 @@ K10_FAN_SPEEDS: Final = {
 K10_FAN_SPEED_LIST: Final = list(K10_FAN_SPEEDS.keys())
 K10_FAN_LEVEL_TO_SPEED: Final = {v: k for k, v in K10_FAN_SPEEDS.items()}
 
-# Clean types
+# Clean types accepted in the "type" field of property 1053 / function 1043
 CLEAN_TYPE_SWEEP: Final = "sweep"
 CLEAN_TYPE_MOP: Final = "mop"
 CLEAN_TYPE_SWEEP_MOP: Final = "sweep_mop"
+CLEAN_TYPE_SWEEP_THEN_MOP: Final = "first_sweep_then_mop"
+CLEAN_TYPES: Final = [
+    CLEAN_TYPE_SWEEP,
+    CLEAN_TYPE_MOP,
+    CLEAN_TYPE_SWEEP_MOP,
+    CLEAN_TYPE_SWEEP_THEN_MOP,
+]
 
 # Work status indicating fault (S10)
 WORK_STATUS_FAULT: Final = 13

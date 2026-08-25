@@ -60,16 +60,22 @@ class TestLogin:
     @pytest.mark.asyncio
     async def test_login_success(self, mock_hass, mock_entry):
         """Test successful login returns access token."""
+        # async_login posts to login, userinfo and botregion/endpoint in turn; the
+        # shared mock response has to satisfy all three.
         resp = _make_response({
             "body": {
                 "access_token": "test_jwt_token",
                 "refresh_token": "test_refresh",
-            }
+                "botRegion": "eu",
+            },
+            "data": [{"name": "wonderlabs", "host": "https://wonder.example"}],
         })
         with _patch_session(resp):
             coordinator = SwitchBotS10Coordinator(mock_hass, mock_entry)
             await coordinator.async_login()
             assert coordinator.access_token == "test_jwt_token"
+            assert coordinator.bot_region == "eu"
+            assert coordinator.wonderlab_endpoint == "https://wonder.example"
 
     @pytest.mark.asyncio
     async def test_login_failure_raises(self, mock_hass, mock_entry):

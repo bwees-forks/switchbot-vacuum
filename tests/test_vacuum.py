@@ -6,9 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.switchbot_vacuum.const import (
+    DEVICE_TYPE_K10,
+    DEVICE_TYPE_S10,
+    DEVICE_TYPE_S20,
+    DEVICE_TYPE_S20PRO,
     WORK_STATUS_CHARGE_DONE,
     WORK_STATUS_CHARGING,
     WORK_STATUS_CLEANING,
+    WORK_STATUS_DRYING_MOP,
     WORK_STATUS_GO_CHARGE,
     WORK_STATUS_PAUSED,
     WORK_STATUS_STANDBY,
@@ -20,6 +25,7 @@ from custom_components.switchbot_vacuum.vacuum import SwitchBotS10Vacuum
 def mock_coordinator():
     """Create a mock coordinator with data."""
     coord = MagicMock()
+    coord.entry.data = {"device_type": DEVICE_TYPE_S10}
     coord.data = {
         "online": True,
         "battery": 85,
@@ -132,7 +138,7 @@ class TestVacuumCommands:
         vac = SwitchBotS10Vacuum(mock_coordinator)
         await vac.async_return_to_base()
         args = mock_coordinator.async_send_command.call_args
-        assert args[0][0] == 1008  # CMD_GO_CHARGE
+        assert args[0][0] == 1022  # CMD_GO_CHARGE
 
     @pytest.mark.asyncio
     async def test_set_fan_speed(self, mock_coordinator):
@@ -202,6 +208,81 @@ class TestRoomNameResolution:
         room_ids = [r["room_id"] for r in rooms_sent]
         assert "ROOM_013" in room_ids
         assert "ROOM_001" in room_ids
+
+
+class TestS20:
+    """Test that the S20 family is driven by the S10 protocol path."""
+
+    @pytest.mark.parametrize("device_type", [DEVICE_TYPE_S20, DEVICE_TYPE_S20PRO])
+    def test_uses_s10_status_map(self, mock_coordinator, device_type):
+        """Test S20 work statuses resolve via the S10 table, not the K10 one."""
+        mock_coordinator.entry.data = {"device_type": device_type}
+        mock_coordinator.data["work_status"] = WORK_STATUS_DRYING_MOP
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert vac.activity.value == "docked"
+
+    @pytest.mark.parametrize("device_type", [DEVICE_TYPE_S20, DEVICE_TYPE_S20PRO])
+    def test_uses_s10_fan_speeds(self, mock_coordinator, device_type):
+        """Test S20 exposes the 4-level S10 fan speed list."""
+        mock_coordinator.entry.data = {"device_type": device_type}
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert vac.fan_speed_list == ["quiet", "standard", "strong", "max"]
+        assert vac.fan_speed == "standard"
+
+    @pytest.mark.parametrize("device_type", [DEVICE_TYPE_S20, DEVICE_TYPE_S20PRO])
+    def test_model_name(self, mock_coordinator, device_type):
+        """Test S20 reports a friendly model rather than the raw product code."""
+        mock_coordinator.entry.data = {"device_type": device_type}
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert "S20" in vac.device_info["model"]
+        assert device_type not in vac.device_info["model"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("device_type", [DEVICE_TYPE_S20, DEVICE_TYPE_S20PRO])
+    async def test_clean_rooms_uses_invoke_func(self, mock_coordinator, device_type):
+        """Test S20 room cleaning uses the S10 clean_rooms command, not StartDefaultClean."""
+        mock_coordinator.entry.data = {"device_type": device_type}
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_clean_rooms(rooms=["ROOM_013"], mode="first_sweep_then_mop")
+        args = mock_coordinator.async_send_command.call_args
+        assert args[0][0] == 1001
+        assert args[0][1]["0"] == "clean_rooms"
+        assert args[0][1]["1"]["rooms"][0]["mode"]["type"] == "first_sweep_then_mop"
+        mock_coordinator.async_send_action.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("device_type", [DEVICE_TYPE_S20, DEVICE_TYPE_S20PRO])
+    async def test_return_to_base(self, mock_coordinator, device_type):
+        """Test S20 return to base uses the S10 go-charge command."""
+        mock_coordinator.entry.data = {"device_type": device_type}
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_return_to_base()
+        assert mock_coordinator.async_send_command.call_args[0][0] == 1022
+
+
+class TestSetCleanMode:
+    """Test the set_clean_mode service."""
+
+    @pytest.mark.asyncio
+    async def test_overrides_only_given_fields(self, mock_coordinator):
+        """Test omitted fields keep their current value."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_set_clean_mode(mode="mop", water_level=3)
+        sent = mock_coordinator.async_send_command.call_args[0][1]["0"]
+        assert sent == {
+            "type": "mop",
+            "water_level": 3,
+            "fan_level": 2,
+            "times": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejected_on_k10(self, mock_coordinator):
+        """Test K10 has no clean mode property to set."""
+        mock_coordinator.entry.data = {"device_type": DEVICE_TYPE_K10}
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_set_clean_mode(mode="mop")
+        mock_coordinator.async_send_command.assert_not_called()
 
 
 class TestForceRefresh:

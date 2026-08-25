@@ -18,17 +18,17 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    CLEAN_TYPES,
     CMD_CHANGE_MODE,
     CMD_CLEAN,
     CMD_CONTROL,
     CMD_GO_CHARGE,
-    DEVICE_TYPE_K10,
-    DEVICE_TYPE_K10PRO,
     DEVICE_TYPE_S10,
     DEVICE_TYPE_TO_MODEL,
     DOMAIN,
     FAN_SPEED_LIST,
     FAN_SPEEDS,
+    K10_FAMILY_DEVICE_TYPES,
     K10_FAN_LEVEL_TO_SPEED,
     K10_FAN_SPEED_LIST,
     K10_FAN_SPEEDS,
@@ -59,8 +59,10 @@ K10_STATUS_TO_ACTIVITY = {
     K10_WORK_STATUS_COLLECTING_DUST: VacuumActivity.DOCKED,  # 11 isCollectingDust
 }
 
-# S10 native work_status values -> HA activity (confirmed from real API + APK SweeperUtil.smali)
+# S10-family native work_status values -> HA activity. Confirmed from the real API plus
+# SweeperUtil.getWorkStatusText in the app, which the S10, S20 and S20 Pro all share.
 S10_STATUS_TO_ACTIVITY = {
+    1: VacuumActivity.IDLE,      # standby
     2: VacuumActivity.DOCKED,    # charging ✓
     3: VacuumActivity.DOCKED,    # charge done
     4: VacuumActivity.CLEANING,  # launching
@@ -81,8 +83,19 @@ S10_STATUS_TO_ACTIVITY = {
     19: VacuumActivity.RETURNING,# collecting dust at base ✓ (before charging)
     20: VacuumActivity.DOCKED,   # drying mop ✓
     21: VacuumActivity.IDLE,     # sleeping
+    22: VacuumActivity.IDLE,     # configuring
     23: VacuumActivity.CLEANING, # remote control
+    24: VacuumActivity.RETURNING,# backing to base
     25: VacuumActivity.RETURNING,# backing to dock for shutdown
+    26: VacuumActivity.RETURNING,# going to water station
+    27: VacuumActivity.DOCKED,   # flushing strainer
+    29: VacuumActivity.DOCKED,   # adding water
+    30: VacuumActivity.DOCKED,   # adding water
+    31: VacuumActivity.IDLE,     # firmware upgrading
+    32: VacuumActivity.PAUSED,   # paused
+    35: VacuumActivity.CLEANING, # scanning / mapping
+    36: VacuumActivity.DOCKED,   # charging at water station
+    37: VacuumActivity.RETURNING,# going to water station
 }
 
 FAN_LEVEL_TO_SPEED = {v: k for k, v in FAN_SPEEDS.items()}
@@ -103,9 +116,7 @@ async def async_setup_entry(
         "clean_rooms",
         {
             vol.Required("rooms"): [str],
-            vol.Optional("mode", default="sweep_mop"): vol.In(
-                ["sweep", "mop", "sweep_mop"]
-            ),
+            vol.Optional("mode", default="sweep_mop"): vol.In(CLEAN_TYPES),
             vol.Optional("fan_level", default=1): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=4)
             ),
@@ -118,6 +129,21 @@ async def async_setup_entry(
             vol.Optional("force_order", default=True): bool,
         },
         "async_clean_rooms",
+    )
+
+    platform.async_register_entity_service(
+        "set_clean_mode",
+        {
+            vol.Optional("mode"): vol.In(CLEAN_TYPES),
+            vol.Optional("fan_level"): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=4)
+            ),
+            vol.Optional("water_level"): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=3)
+            ),
+            vol.Optional("times"): vol.All(vol.Coerce(int), vol.Range(min=1, max=2)),
+        },
+        "async_set_clean_mode",
     )
 
     platform.async_register_entity_service(
@@ -146,9 +172,10 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
         self._attr_unique_id = f"{coordinator.device_mac}_vacuum"
         self._attr_name = coordinator.device_name or "SwitchBot Vacuum"
         device_type = coordinator.entry.data.get("device_type", DEVICE_TYPE_S10)
-        self._is_k10 = device_type == DEVICE_TYPE_K10
-        self._attr_fan_speed_list = K10_FAN_SPEED_LIST if self._is_k10 else FAN_SPEED_LIST
-        self._is_k10_pro = device_type == DEVICE_TYPE_K10PRO
+        self._is_k10_family = device_type in K10_FAMILY_DEVICE_TYPES
+        self._attr_fan_speed_list = (
+            K10_FAN_SPEED_LIST if self._is_k10_family else FAN_SPEED_LIST
+        )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.device_mac)},
             name=coordinator.device_name or "SwitchBot Vacuum",
@@ -161,7 +188,7 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
     def activity(self) -> VacuumActivity | None:
         """Return current activity."""
         status = self.coordinator.data.get("work_status", 0)
-        if self._is_k10 or self._is_k10_pro:
+        if self._is_k10_family:
             activity = K10_STATUS_TO_ACTIVITY.get(status)
         else:
             activity = S10_STATUS_TO_ACTIVITY.get(status)
@@ -178,7 +205,7 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
     def fan_speed(self) -> str | None:
         """Return current fan speed."""
         mode = self.coordinator.data.get("clean_mode", {})
-        if self._is_k10 or self._is_k10_pro:
+        if self._is_k10_family:
             level = mode.get("fan_level", 0) if isinstance(mode, dict) else 0
             return K10_FAN_LEVEL_TO_SPEED.get(level, "quiet")
         level = mode.get("fan_level", 1) if isinstance(mode, dict) else 1
@@ -193,11 +220,11 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
 
         if isinstance(mode, dict):
             attrs["times"] = mode.get("times", 1)
-        if not self._is_k10 and not self._is_k10_pro and isinstance(mode, dict):
+        if not self._is_k10_family and isinstance(mode, dict):
             attrs["water_level"] = mode.get("water_level", 1)
             attrs["clean_type"] = mode.get("type", "sweep_mop")
 
-        if not self._is_k10 and not self._is_k10_pro and isinstance(summary, dict):
+        if not self._is_k10_family and isinstance(summary, dict):
             attrs["last_clean_area"] = summary.get("clean_area", 0)
             attrs["last_clean_time"] = summary.get("clean_time", 0)
 
@@ -213,32 +240,24 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
 
     async def async_start(self) -> None:
         """Start cleaning."""
-        if self._is_k10 or self._is_k10_pro:
+        if self._is_k10_family:
             await self.coordinator.async_send_action(
                 "StartDefaultClean", {"CleanTimes": 1}
             )
             self._optimistic_update(K10_WORK_STATUS_CLEANING)
         else:
-            mode = self.coordinator.data.get("clean_mode", {})
-            if not isinstance(mode, dict):
-                mode = {}
             await self.coordinator.async_send_command(CMD_CLEAN, {
                 "0": "clean_all",
                 "1": {
                     "force_order": False,
-                    "mode": {
-                        "fan_level": mode.get("fan_level", 1),
-                        "times": mode.get("times", 1),
-                        "type": mode.get("type", "sweep_mop"),
-                        "water_level": mode.get("water_level", 1),
-                    },
+                    "mode": self._current_mode(),
                 },
             })
             self._optimistic_update(9)  # sweeping
 
     async def async_stop(self, **kwargs: Any) -> None:
         """Stop cleaning."""
-        if self._is_k10 or self._is_k10_pro:
+        if self._is_k10_family:
             await self.coordinator.async_send_action("PauseRobot")
             self._optimistic_update(K10_WORK_STATUS_PAUSED)
         else:
@@ -247,7 +266,7 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
 
     async def async_pause(self) -> None:
         """Pause cleaning."""
-        if self._is_k10 or self._is_k10_pro:
+        if self._is_k10_family:
             await self.coordinator.async_send_action("PauseRobot")
             self._optimistic_update(K10_WORK_STATUS_PAUSED)
         else:
@@ -256,32 +275,59 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
 
     async def async_return_to_base(self, **kwargs: Any) -> None:
         """Return to charging base."""
-        if self._is_k10 or self._is_k10_pro:
+        if self._is_k10_family:
             await self.coordinator.async_send_action("ReturnChargeBase")
             self._optimistic_update(K10_WORK_STATUS_GO_CHARGE)
         else:
             await self.coordinator.async_send_command(CMD_GO_CHARGE, {})
             self._optimistic_update(15)  # backing to charge
 
+    def _current_mode(self) -> dict[str, Any]:
+        """Return the active clean mode, falling back to device defaults."""
+        mode = self.coordinator.data.get("clean_mode", {})
+        if not isinstance(mode, dict):
+            mode = {}
+        return {
+            "fan_level": mode.get("fan_level", 1),
+            "times": mode.get("times", 1),
+            "type": mode.get("type", "sweep_mop"),
+            "water_level": mode.get("water_level", 1),
+        }
+
+    async def _async_change_mode(self, **overrides: Any) -> None:
+        """Send a full clean mode, replacing only the given fields."""
+        mode = self._current_mode() | {
+            k: v for k, v in overrides.items() if v is not None
+        }
+        await self.coordinator.async_send_command(CMD_CHANGE_MODE, {"0": mode})
+        await self.coordinator.async_request_refresh()
+
     async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
         """Set fan speed."""
-        if self._is_k10 or self._is_k10_pro:
-            level = K10_FAN_SPEEDS.get(fan_speed, 0)
-            await self.coordinator.async_send_info({"SuctionPowLevel": level})
-        else:
-            level = FAN_SPEEDS.get(fan_speed, 1)
-            mode = self.coordinator.data.get("clean_mode", {})
-            if not isinstance(mode, dict):
-                mode = {}
-            await self.coordinator.async_send_command(CMD_CHANGE_MODE, {
-                "0": {
-                    "fan_level": level,
-                    "times": mode.get("times", 1),
-                    "type": mode.get("type", "sweep_mop"),
-                    "water_level": mode.get("water_level", 1),
-                },
-            })
-        await self.coordinator.async_request_refresh()
+        if self._is_k10_family:
+            await self.coordinator.async_send_info(
+                {"SuctionPowLevel": K10_FAN_SPEEDS.get(fan_speed, 0)}
+            )
+            await self.coordinator.async_request_refresh()
+            return
+        await self._async_change_mode(fan_level=FAN_SPEEDS.get(fan_speed, 1))
+
+    async def async_set_clean_mode(
+        self,
+        mode: str | None = None,
+        fan_level: int | None = None,
+        water_level: int | None = None,
+        times: int | None = None,
+    ) -> None:
+        """Set the sweep/mop type, suction and water level used by subsequent cleans."""
+        if self._is_k10_family:
+            _LOGGER.warning(
+                "set_clean_mode is only supported on the S10 family (S10/S20/S20 Pro)"
+            )
+            return
+        await self._async_change_mode(
+            type=mode, fan_level=fan_level, water_level=water_level, times=times
+        )
 
     async def async_send_command(
         self, command: str, params: dict[str, Any] | list[Any] | None = None, **kwargs: Any
@@ -315,7 +361,7 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
                 _LOGGER.warning("Unknown room: %s", room)
                 resolved.append(room)
 
-        if self._is_k10 or self._is_k10_pro:
+        if self._is_k10_family:
             _LOGGER.warning(
                 "K10+ does not support room-specific cleaning via cloud API "
                 "(uses local Qihoo SDK in the official app). Starting whole-house clean."

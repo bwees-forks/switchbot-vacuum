@@ -17,7 +17,13 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICE_TYPE_K10, DEVICE_TYPE_K10PRO, DOMAIN, ERROR_CODES, WORK_STATUS_FAULT
+from .const import (
+    DOMAIN,
+    ERROR_CODES,
+    K10_FAMILY_DEVICE_TYPES,
+    WORK_STATUS_FAULT,
+    WORK_STATUS_NAMES,
+)
 from .coordinator import SwitchBotS10Coordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,7 +87,8 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = [SwitchBotVacuumError(coordinator)]
 
-    if device_type not in (DEVICE_TYPE_K10, DEVICE_TYPE_K10PRO):
+    if device_type not in K10_FAMILY_DEVICE_TYPES:
+        entities.append(SwitchBotVacuumStatus(coordinator))
         entities.extend(
             SwitchBotCleanSummarySensor(coordinator, desc)
             for desc in CLEAN_SUMMARY_SENSORS
@@ -168,6 +175,42 @@ class SwitchBotCleanSummarySensor(CoordinatorEntity[SwitchBotS10Coordinator], Se
         if raw is None:
             return None
         return round(raw * self.entity_description.scale, 1)
+
+
+class SwitchBotVacuumStatus(CoordinatorEntity[SwitchBotS10Coordinator], SensorEntity):
+    """Sensor exposing the raw work status name, for finer automation triggers.
+
+    The vacuum entity collapses every base station activity into DOCKED; this keeps the
+    distinction between drying, washing, dust collection and refilling.
+    """
+
+    _attr_name = "Status"
+    _attr_icon = "mdi:robot-vacuum"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = sorted(set(WORK_STATUS_NAMES.values()) | {"unknown"})
+
+    def __init__(self, coordinator: SwitchBotS10Coordinator) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_mac}_status"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_mac)},
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the work status name."""
+        status = self.coordinator.data.get("work_status", 0)
+        name = WORK_STATUS_NAMES.get(status)
+        if name is None:
+            _LOGGER.debug("Unknown SwitchBot vacuum work_status %s", status)
+            return "unknown"
+        return name
+
+    @property
+    def extra_state_attributes(self) -> dict[str, int]:
+        """Return the raw status code."""
+        return {"work_status": self.coordinator.data.get("work_status", 0)}
 
 
 class SwitchBotVacuumError(CoordinatorEntity[SwitchBotS10Coordinator], SensorEntity):
