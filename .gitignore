@@ -14,3 +14,4 @@ docs/plans/
 API_REFERENCE.md
 *.env
 /tmp/
+rn_bundle/

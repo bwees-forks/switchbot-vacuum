@@ -26,7 +26,8 @@ SwitchBot does not provide a public API for their robot vacuums. The official Sw
 - **Error detection** — error sensor with specific error types (stuck, water tank empty, brush tangled, etc.) and a problem binary sensor for easy automations
 - **Room sensor entities** — one per room discovered from the vacuum's map
 - **Room-aware cleaning** — clean specific rooms by name or ID, with full control over mode, suction, water level, passes, and order
-- **Mop & sweep control** — pick `sweep`, `mop`, `sweep_mop` or `first_sweep_then_mop`, plus suction and water level, as a persistent default or per room clean
+- **Native area cleaning** — on Home Assistant 2026.8+ the vacuum's rooms map onto HA areas, so `vacuum.clean_area` and the dashboard's area picker work directly (S10 family only)
+- **Mop & sweep control** — dropdowns for clean type (`sweep`, `mop`, `sweep_mop`, `first_sweep_then_mop`), water level and passes, plus the same options per room clean
 - **Base station tracking** — dedicated mop drying and mop washing binary sensors, plus a status sensor that distinguishes drying, washing, dust collection and water refilling
 - **Automatic room discovery** — room names are downloaded from the vacuum's S3 map data every 24 hours
 - **Multi-device support** — if your account has multiple SwitchBot vacuums, the config flow lets you pick which one to add
@@ -71,10 +72,11 @@ The main entity (`vacuum.switchbot_vacuum`) provides:
 |---------|-------------|
 | **State** | idle, cleaning, docked, paused, returning |
 | **Battery** | Current battery percentage |
-| **Fan speed** | quiet, standard, strong, max |
+| **Fan speed** | Quiet, Standard, Strong, Max (lowercase names still accepted) |
 | **Start** | Start full cleaning |
 | **Stop / Pause** | Stop or pause current cleaning |
 | **Return to base** | Send vacuum to charging station |
+| **Clean area** | Clean the rooms mapped to one or more HA areas — S10 family, HA 2026.8+ ([details](#area-cleaning)) |
 
 #### Extra attributes
 
@@ -140,6 +142,24 @@ The error sensor state is one of:
 
 Both entities expose `error_code` (raw integer) and `error_type`/`error_description` as extra attributes.
 
+### Cleaning options
+
+Three dropdowns on the device page control how the vacuum cleans (S10 family only).
+They set the same clean mode the app does, and apply to `vacuum.start` and to the
+vacuum card's start button:
+
+| Entity | Options |
+|--------|---------|
+| `select.*.clean_type` | `sweep`, `mop`, `sweep_mop`, `first_sweep_then_mop` |
+| `select.*.water_level` | `low`, `medium`, `high` |
+| `select.*.passes` | `1`, `2` |
+
+Suction is on the vacuum entity itself as the standard fan speed control.
+
+Changing one dropdown leaves the others alone — the integration reads the current mode
+and sends it back with only that field replaced, because the underlying command
+replaces the whole mode object.
+
 ### Base station activity
 
 The vacuum entity reports every base station activity as `docked`, which makes drying
@@ -194,11 +214,54 @@ Each room discovered from the vacuum's map gets a sensor entity (e.g. `sensor.ki
 {{ state_attr('sensor.kitchen', 'room_id') }}
 ```
 
+### Area cleaning
+
+Home Assistant 2026.8 added native area cleaning for vacuums, and this integration
+supports it on the **S10 family only** (S10, S20, S20 Pro). The K10+ and K10+ Pro cannot
+clean individual rooms through the cloud API at all, so they never advertise the feature
+— see [K10+ room cleaning](#k10-room-cleaning--not-supported).
+
+On older Home Assistant versions the feature is simply not advertised; everything else
+keeps working, and `switchbot_vacuum.clean_rooms` remains the way to clean by room.
+
+**Mapping rooms to areas**
+
+Home Assistant owns the mapping between its areas and the vacuum's rooms, so you set it
+up once:
+
+1. Open the vacuum entity → settings (gear icon) → **Map vacuum segments to areas**
+2. Pick which of the vacuum's rooms belong to each HA area (an area can hold several rooms)
+3. Save
+
+Opening the dialog re-downloads the map, so newly created or renamed rooms show up
+straight away. If the vacuum later reports different rooms than the ones you mapped —
+after a re-map or a room rename in the SwitchBot app — a repair notification appears
+prompting you to re-map.
+
+**Cleaning an area**
+
+```yaml
+action: vacuum.clean_area
+target:
+  entity_id: vacuum.switchbot_vacuum
+data:
+  cleaning_area_id:
+    - kitchen
+    - hallway
+```
+
+The clean uses the vacuum's current clean mode — the `clean_type`, `water_level` and
+`passes` dropdowns plus the fan speed on the vacuum entity. Use
+`switchbot_vacuum.clean_rooms` instead when you want to override those per call.
+
 ## Services
 
 ### `switchbot_vacuum.clean_rooms`
 
-Clean specific rooms with full control over cleaning parameters.
+Clean specific rooms with full control over cleaning parameters. Unlike
+[`vacuum.clean_area`](#area-cleaning) this addresses the vacuum's own rooms rather than
+HA areas, overrides the clean mode per call, and works on every Home Assistant version —
+it is the way to clean by room before 2026.8.
 
 ```yaml
 service: switchbot_vacuum.clean_rooms
@@ -246,7 +309,9 @@ data:
 | `water_level` | no | 1 (low), 2 (medium), 3 (high) |
 | `times` | no | 1 or 2 passes |
 
-Suction alone can also be set with the standard `vacuum.set_fan_speed` service.
+Suction alone can also be set with the standard `vacuum.set_fan_speed` service, using
+`Quiet`, `Standard`, `Strong` or `Max`. The lowercase spellings used before 0.7 are still
+accepted, so existing automations keep working.
 
 ### `switchbot_vacuum.force_refresh`
 

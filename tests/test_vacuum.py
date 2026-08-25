@@ -1,10 +1,13 @@
 """Tests for the SwitchBot S10 vacuum entity."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from dataclasses import dataclass
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from homeassistant.components.vacuum import VacuumEntityFeature
 
+from custom_components.switchbot_vacuum import vacuum as vacuum_module
 from custom_components.switchbot_vacuum.const import (
     DEVICE_TYPE_K10,
     DEVICE_TYPE_S10,
@@ -19,6 +22,28 @@ from custom_components.switchbot_vacuum.const import (
     WORK_STATUS_STANDBY,
 )
 from custom_components.switchbot_vacuum.vacuum import SwitchBotS10Vacuum
+
+
+@dataclass
+class _StandInSegment:
+    """Stands in for homeassistant.components.vacuum.Segment on HA < 2026.8."""
+
+    id: str
+    name: str
+    group: str | None = None
+
+
+SEGMENT_CLS = vacuum_module.Segment or _StandInSegment
+CLEAN_AREA = VacuumEntityFeature(16384)
+
+
+@pytest.fixture
+def clean_area_supported():
+    """Make the entity behave as it does on an HA core that has area cleaning."""
+    with patch.object(vacuum_module, "Segment", SEGMENT_CLS), patch.object(
+        vacuum_module, "CLEAN_AREA_FEATURE", CLEAN_AREA
+    ):
+        yield
 
 
 @pytest.fixture
@@ -40,6 +65,12 @@ def mock_coordinator():
     coord.device_name = "S10 B6"
     coord.async_send_command = AsyncMock(return_value={"resultCode": 100})
     coord.async_request_refresh = AsyncMock()
+    coord.async_refresh = AsyncMock()
+    coord.async_refresh_rooms = AsyncMock()
+    coord.async_change_clean_mode = AsyncMock(return_value={"resultCode": 100})
+    coord.current_clean_mode = MagicMock(
+        side_effect=lambda: dict(coord.data["clean_mode"])
+    )
     return coord
 
 
@@ -90,7 +121,7 @@ class TestVacuumState:
     def test_fan_speed(self, mock_coordinator):
         """Test fan speed maps from fan_level."""
         vac = SwitchBotS10Vacuum(mock_coordinator)
-        assert vac.fan_speed == "standard"
+        assert vac.fan_speed == "Standard"
 
     def test_extra_state_attributes(self, mock_coordinator):
         """Test extra attributes include rooms and clean info."""
@@ -144,10 +175,10 @@ class TestVacuumCommands:
     async def test_set_fan_speed(self, mock_coordinator):
         """Test set fan speed sends change mode."""
         vac = SwitchBotS10Vacuum(mock_coordinator)
-        await vac.async_set_fan_speed("strong")
-        args = mock_coordinator.async_send_command.call_args
-        assert args[0][0] == 1043  # CMD_CHANGE_MODE
-        assert args[0][1]["0"]["fan_level"] == 3
+        await vac.async_set_fan_speed("Strong")
+        assert mock_coordinator.async_change_clean_mode.call_args.kwargs == {
+            "fan_level": 3
+        }
 
     @pytest.mark.asyncio
     async def test_clean_rooms_with_ids(self, mock_coordinator):
@@ -168,6 +199,43 @@ class TestVacuumCommands:
         assert len(params["1"]["rooms"]) == 2
         assert params["1"]["rooms"][0]["room_id"] == "ROOM_013"
         assert params["1"]["rooms"][0]["mode"]["type"] == "mop"
+
+
+class TestFanSpeedLabels:
+    """Test the capitalized fan speed labels and their lowercase aliases."""
+
+    def test_list_is_capitalized(self, mock_coordinator):
+        """Test the UI is offered capitalized labels."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert vac.fan_speed_list == ["Quiet", "Standard", "Strong", "Max"]
+
+    def test_reported_speed_is_capitalized(self, mock_coordinator):
+        """Test the current speed reads back capitalized."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert vac.fan_speed == "Standard"
+
+    @pytest.mark.asyncio
+    async def test_legacy_lowercase_still_works(self, mock_coordinator):
+        """Test automations written against the old lowercase names do not silently break."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        for name in ("quiet", "standard", "strong", "max"):
+            await vac.async_set_fan_speed(name)
+        levels = [
+            call.kwargs["fan_level"]
+            for call in mock_coordinator.async_change_clean_mode.call_args_list
+        ]
+        assert levels == [1, 2, 3, 4]
+
+    @pytest.mark.asyncio
+    async def test_k10_legacy_lowercase_still_works(self, mock_coordinator):
+        """Test the K10 suction path also accepts the old lowercase names."""
+        mock_coordinator.entry.data = {"device_type": DEVICE_TYPE_K10}
+        mock_coordinator.async_send_info = AsyncMock()
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_set_fan_speed("max")
+        assert mock_coordinator.async_send_info.call_args[0][0] == {
+            "SuctionPowLevel": 3
+        }
 
 
 class TestRoomNameResolution:
@@ -226,8 +294,8 @@ class TestS20:
         """Test S20 exposes the 4-level S10 fan speed list."""
         mock_coordinator.entry.data = {"device_type": device_type}
         vac = SwitchBotS10Vacuum(mock_coordinator)
-        assert vac.fan_speed_list == ["quiet", "standard", "strong", "max"]
-        assert vac.fan_speed == "standard"
+        assert vac.fan_speed_list == ["Quiet", "Standard", "Strong", "Max"]
+        assert vac.fan_speed == "Standard"
 
     @pytest.mark.parametrize("device_type", [DEVICE_TYPE_S20, DEVICE_TYPE_S20PRO])
     def test_model_name(self, mock_coordinator, device_type):
@@ -268,12 +336,11 @@ class TestSetCleanMode:
         """Test omitted fields keep their current value."""
         vac = SwitchBotS10Vacuum(mock_coordinator)
         await vac.async_set_clean_mode(mode="mop", water_level=3)
-        sent = mock_coordinator.async_send_command.call_args[0][1]["0"]
-        assert sent == {
+        assert mock_coordinator.async_change_clean_mode.call_args.kwargs == {
             "type": "mop",
             "water_level": 3,
-            "fan_level": 2,
-            "times": 1,
+            "fan_level": None,
+            "times": None,
         }
 
     @pytest.mark.asyncio
@@ -282,7 +349,186 @@ class TestSetCleanMode:
         mock_coordinator.entry.data = {"device_type": DEVICE_TYPE_K10}
         vac = SwitchBotS10Vacuum(mock_coordinator)
         await vac.async_set_clean_mode(mode="mop")
-        mock_coordinator.async_send_command.assert_not_called()
+        mock_coordinator.async_change_clean_mode.assert_not_called()
+
+
+class TestCleanAreaFeature:
+    """Test how the CLEAN_AREA feature flag is advertised."""
+
+    def test_advertised_for_s10_family(self, mock_coordinator, clean_area_supported):
+        """Test the S10 family advertises area cleaning."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert CLEAN_AREA in vac.supported_features
+
+    def test_not_advertised_for_k10_family(self, mock_coordinator, clean_area_supported):
+        """Test K10 devices never advertise area cleaning."""
+        mock_coordinator.entry.data = {"device_type": DEVICE_TYPE_K10}
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert CLEAN_AREA not in vac.supported_features
+
+    def test_not_advertised_on_older_core(self, mock_coordinator):
+        """Test the flag is skipped when the running HA does not have it."""
+        with patch.object(vacuum_module, "CLEAN_AREA_FEATURE", None):
+            vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert CLEAN_AREA not in vac.supported_features
+
+
+class TestSegments:
+    """Test segment discovery and segment cleaning."""
+
+    @pytest.mark.asyncio
+    async def test_segments_from_rooms(self, mock_coordinator, clean_area_supported):
+        """Test every map room becomes a segment with its id and name."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        segments = await vac.async_get_segments()
+        assert [(s.id, s.name) for s in segments] == [
+            ("ROOM_001", "Table"),
+            ("ROOM_013", "Kitchen"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_segments_refresh_rooms_first(
+        self, mock_coordinator, clean_area_supported
+    ):
+        """Test rooms are re-read so the mapping dialog shows current data."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_get_segments()
+        mock_coordinator.async_refresh_rooms.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_segments_empty_when_no_rooms(
+        self, mock_coordinator, clean_area_supported
+    ):
+        """Test a vacuum with no mapped rooms reports no segments."""
+        mock_coordinator.data["rooms"] = {}
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        assert await vac.async_get_segments() == []
+
+    @pytest.mark.asyncio
+    async def test_clean_segments_sends_clean_rooms(
+        self, mock_coordinator, clean_area_supported
+    ):
+        """Test segment cleaning uses the room clean command with the current mode."""
+        mock_coordinator.data["clean_mode"] = {
+            "fan_level": 3,
+            "times": 2,
+            "type": "mop",
+            "water_level": 3,
+        }
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_clean_segments(["ROOM_013", "ROOM_001"])
+
+        args = mock_coordinator.async_send_command.call_args
+        assert args[0][0] == 1001
+        params = args[0][1]
+        assert params["0"] == "clean_rooms"
+        assert [r["room_id"] for r in params["1"]["rooms"]] == ["ROOM_013", "ROOM_001"]
+        assert params["1"]["mode"] == {
+            "fan_level": 3,
+            "times": 2,
+            "type": "mop",
+            "water_level": 3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_clean_segments_with_no_segments(
+        self, mock_coordinator, clean_area_supported
+    ):
+        """Test an empty segment list still sends a well-formed command."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        await vac.async_clean_segments([])
+        params = mock_coordinator.async_send_command.call_args[0][1]
+        assert params["1"]["rooms"] == []
+
+
+class TestSegmentsChangedIssue:
+    """Test the repair raised when the map's rooms stop matching the mapped areas."""
+
+    @staticmethod
+    def _vacuum(coordinator, last_seen):
+        """Build an entity registered with the given previously mapped segments."""
+        vac = SwitchBotS10Vacuum(coordinator)
+        vac.registry_entry = MagicMock()
+        return vac, patch.object(
+            SwitchBotS10Vacuum,
+            "last_seen_segments",
+            new_callable=PropertyMock,
+            return_value=last_seen,
+            create=True,
+        )
+
+    def test_issue_created_when_rooms_changed(
+        self, mock_coordinator, clean_area_supported
+    ):
+        """Test a renamed room prompts the user to re-map."""
+        vac, last_seen = self._vacuum(
+            mock_coordinator,
+            [SEGMENT_CLS(id="ROOM_001", name="Table"),
+             SEGMENT_CLS(id="ROOM_013", name="Pantry")],
+        )
+        with last_seen, patch.object(
+            SwitchBotS10Vacuum, "async_create_segments_issue", create=True
+        ) as create_issue:
+            vac._async_check_segments_changed()
+        create_issue.assert_called_once()
+
+    def test_no_issue_when_rooms_unchanged(
+        self, mock_coordinator, clean_area_supported
+    ):
+        """Test an unchanged map raises nothing."""
+        vac, last_seen = self._vacuum(
+            mock_coordinator,
+            [SEGMENT_CLS(id="ROOM_001", name="Table"),
+             SEGMENT_CLS(id="ROOM_013", name="Kitchen")],
+        )
+        with last_seen, patch.object(
+            SwitchBotS10Vacuum, "async_create_segments_issue", create=True
+        ) as create_issue:
+            vac._async_check_segments_changed()
+        create_issue.assert_not_called()
+
+    def test_no_issue_when_never_mapped(self, mock_coordinator, clean_area_supported):
+        """Test nothing is raised before the user has mapped any area."""
+        vac, last_seen = self._vacuum(mock_coordinator, None)
+        with last_seen, patch.object(
+            SwitchBotS10Vacuum, "async_create_segments_issue", create=True
+        ) as create_issue:
+            vac._async_check_segments_changed()
+        create_issue.assert_not_called()
+
+    def test_no_issue_when_rooms_empty(self, mock_coordinator, clean_area_supported):
+        """Test a failed room refresh does not look like a changed map."""
+        mock_coordinator.data["rooms"] = {}
+        vac, last_seen = self._vacuum(
+            mock_coordinator, [SEGMENT_CLS(id="ROOM_013", name="Kitchen")]
+        )
+        with last_seen, patch.object(
+            SwitchBotS10Vacuum, "async_create_segments_issue", create=True
+        ) as create_issue:
+            vac._async_check_segments_changed()
+        create_issue.assert_not_called()
+
+    def test_no_issue_without_registry_entry(
+        self, mock_coordinator, clean_area_supported
+    ):
+        """Test an entity that is not registered yet is left alone."""
+        vac = SwitchBotS10Vacuum(mock_coordinator)
+        with patch.object(
+            SwitchBotS10Vacuum, "async_create_segments_issue", create=True
+        ) as create_issue:
+            vac._async_check_segments_changed()
+        create_issue.assert_not_called()
+
+    def test_no_issue_on_older_core(self, mock_coordinator):
+        """Test cores without Segment support never touch the repair API."""
+        vac, last_seen = self._vacuum(
+            mock_coordinator, [SEGMENT_CLS(id="ROOM_013", name="Pantry")]
+        )
+        with patch.object(vacuum_module, "Segment", None), last_seen, patch.object(
+            SwitchBotS10Vacuum, "async_create_segments_issue", create=True
+        ) as create_issue:
+            vac._async_check_segments_changed()
+        create_issue.assert_not_called()
 
 
 class TestForceRefresh:

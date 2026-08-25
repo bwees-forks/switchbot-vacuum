@@ -140,24 +140,30 @@ K10PRO_PROP_CHILD_LOCK: Final = 4610
 K10PRO_PROP_DUST_COLECT_TIME: Final = 4614
 K10PRO_PROP_AUTO_RESTART: Final = 4615
 
-# Fan speed mapping (S10)
+# Fan speed mapping (S10). HA renders these strings verbatim in the UI, so they are
+# capitalized; the lowercase aliases below keep pre-0.7 automations working.
 FAN_SPEEDS: Final = {
-    "quiet": 1,
-    "standard": 2,
-    "strong": 3,
-    "max": 4,
+    "Quiet": 1,
+    "Standard": 2,
+    "Strong": 3,
+    "Max": 4,
 }
 FAN_SPEED_LIST: Final = list(FAN_SPEEDS.keys())
 
 # Fan speed mapping (K10+) — SuctionPowLevel 0-3 (confirmed via app: quiet/standard/strong/max)
 K10_FAN_SPEEDS: Final = {
-    "quiet": 0,
-    "standard": 1,
-    "strong": 2,
-    "max": 3,
+    "Quiet": 0,
+    "Standard": 1,
+    "Strong": 2,
+    "Max": 3,
 }
 K10_FAN_SPEED_LIST: Final = list(K10_FAN_SPEEDS.keys())
 K10_FAN_LEVEL_TO_SPEED: Final = {v: k for k, v in K10_FAN_SPEEDS.items()}
+
+FAN_SPEED_ALIASES: Final = {name.lower(): level for name, level in FAN_SPEEDS.items()}
+K10_FAN_SPEED_ALIASES: Final = {
+    name.lower(): level for name, level in K10_FAN_SPEEDS.items()
+}
 
 # Clean types accepted in the "type" field of property 1053 / function 1043
 CLEAN_TYPE_SWEEP: Final = "sweep"
@@ -170,6 +176,15 @@ CLEAN_TYPES: Final = [
     CLEAN_TYPE_SWEEP_MOP,
     CLEAN_TYPE_SWEEP_THEN_MOP,
 ]
+
+# Water output levels for the "water_level" field of property 1053 / function 1043
+WATER_LEVELS: Final = {"low": 1, "medium": 2, "high": 3}
+WATER_LEVEL_LIST: Final = list(WATER_LEVELS.keys())
+WATER_LEVEL_TO_NAME: Final = {v: k for k, v in WATER_LEVELS.items()}
+
+# Cleaning passes for the "times" field
+CLEAN_PASSES: Final = {"1": 1, "2": 2}
+CLEAN_PASS_LIST: Final = list(CLEAN_PASSES.keys())
 
 # Work status indicating fault (S10)
 WORK_STATUS_FAULT: Final = 13

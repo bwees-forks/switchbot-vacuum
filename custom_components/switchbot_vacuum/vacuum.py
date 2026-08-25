@@ -11,7 +11,7 @@ from homeassistant.components.vacuum import (
     VacuumEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -19,19 +19,19 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     CLEAN_TYPES,
-    CMD_CHANGE_MODE,
     CMD_CLEAN,
     CMD_CONTROL,
     CMD_GO_CHARGE,
     DEVICE_TYPE_S10,
     DEVICE_TYPE_TO_MODEL,
     DOMAIN,
+    FAN_SPEED_ALIASES,
     FAN_SPEED_LIST,
     FAN_SPEEDS,
     K10_FAMILY_DEVICE_TYPES,
     K10_FAN_LEVEL_TO_SPEED,
+    K10_FAN_SPEED_ALIASES,
     K10_FAN_SPEED_LIST,
-    K10_FAN_SPEEDS,
     K10_WORK_STATUS_CHARGING,
     K10_WORK_STATUS_CLEANING,
     K10_WORK_STATUS_CLEANING_2,
@@ -43,6 +43,15 @@ from .const import (
     K10_WORK_STATUS_STANDBY,
 )
 from .coordinator import SwitchBotS10Coordinator
+
+# Segment and VacuumEntityFeature.CLEAN_AREA landed in HA 2026.8. On older cores the
+# integration still loads, it just never advertises area cleaning.
+try:
+    from homeassistant.components.vacuum import Segment
+except ImportError:
+    Segment = None
+
+CLEAN_AREA_FEATURE = getattr(VacuumEntityFeature, "CLEAN_AREA", None)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -176,6 +185,8 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
         self._attr_fan_speed_list = (
             K10_FAN_SPEED_LIST if self._is_k10_family else FAN_SPEED_LIST
         )
+        if not self._is_k10_family and CLEAN_AREA_FEATURE is not None:
+            self._attr_supported_features |= CLEAN_AREA_FEATURE
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.device_mac)},
             name=coordinator.device_name or "SwitchBot Vacuum",
@@ -207,9 +218,9 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
         mode = self.coordinator.data.get("clean_mode", {})
         if self._is_k10_family:
             level = mode.get("fan_level", 0) if isinstance(mode, dict) else 0
-            return K10_FAN_LEVEL_TO_SPEED.get(level, "quiet")
+            return K10_FAN_LEVEL_TO_SPEED.get(level, "Quiet")
         level = mode.get("fan_level", 1) if isinstance(mode, dict) else 1
-        return FAN_LEVEL_TO_SPEED.get(level, "quiet")
+        return FAN_LEVEL_TO_SPEED.get(level, "Quiet")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -250,7 +261,7 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
                 "0": "clean_all",
                 "1": {
                     "force_order": False,
-                    "mode": self._current_mode(),
+                    "mode": self.coordinator.current_clean_mode(),
                 },
             })
             self._optimistic_update(9)  # sweeping
@@ -282,35 +293,17 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
             await self.coordinator.async_send_command(CMD_GO_CHARGE, {})
             self._optimistic_update(15)  # backing to charge
 
-    def _current_mode(self) -> dict[str, Any]:
-        """Return the active clean mode, falling back to device defaults."""
-        mode = self.coordinator.data.get("clean_mode", {})
-        if not isinstance(mode, dict):
-            mode = {}
-        return {
-            "fan_level": mode.get("fan_level", 1),
-            "times": mode.get("times", 1),
-            "type": mode.get("type", "sweep_mop"),
-            "water_level": mode.get("water_level", 1),
-        }
-
-    async def _async_change_mode(self, **overrides: Any) -> None:
-        """Send a full clean mode, replacing only the given fields."""
-        mode = self._current_mode() | {
-            k: v for k, v in overrides.items() if v is not None
-        }
-        await self.coordinator.async_send_command(CMD_CHANGE_MODE, {"0": mode})
-        await self.coordinator.async_request_refresh()
-
     async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
         """Set fan speed."""
         if self._is_k10_family:
             await self.coordinator.async_send_info(
-                {"SuctionPowLevel": K10_FAN_SPEEDS.get(fan_speed, 0)}
+                {"SuctionPowLevel": K10_FAN_SPEED_ALIASES.get(fan_speed.lower(), 0)}
             )
             await self.coordinator.async_request_refresh()
             return
-        await self._async_change_mode(fan_level=FAN_SPEEDS.get(fan_speed, 1))
+        await self.coordinator.async_change_clean_mode(
+            fan_level=FAN_SPEED_ALIASES.get(fan_speed.lower(), 1)
+        )
 
     async def async_set_clean_mode(
         self,
@@ -325,7 +318,7 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
                 "set_clean_mode is only supported on the S10 family (S10/S20/S20 Pro)"
             )
             return
-        await self._async_change_mode(
+        await self.coordinator.async_change_clean_mode(
             type=mode, fan_level=fan_level, water_level=water_level, times=times
         )
 
@@ -387,6 +380,41 @@ class SwitchBotS10Vacuum(CoordinatorEntity[SwitchBotS10Coordinator], StateVacuum
                 },
             })
         await self.coordinator.async_request_refresh()
+
+    async def async_get_segments(self) -> list[Segment]:
+        """Return the rooms on the vacuum's map as cleanable segments."""
+        await self.async_force_refresh()
+        rooms = self.coordinator.data.get("rooms", {})
+        return [Segment(id=room_id, name=name) for room_id, name in rooms.items()]
+
+    async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
+        """Clean the given map rooms using the currently selected clean mode."""
+        mode = self.coordinator.current_clean_mode()
+        await self.async_clean_rooms(
+            rooms=list(segment_ids),
+            mode=mode["type"],
+            fan_level=mode["fan_level"],
+            water_level=mode["water_level"],
+            times=mode["times"],
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data, flagging segment changes before writing state."""
+        self._async_check_segments_changed()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _async_check_segments_changed(self) -> None:
+        """Raise a repair when the map's rooms no longer match the mapped areas."""
+        if Segment is None or self._is_k10_family or self.registry_entry is None:
+            return
+        rooms = self.coordinator.data.get("rooms", {})
+        last_seen = self.last_seen_segments
+        if not rooms or last_seen is None:
+            return
+        if {segment.id: segment.name for segment in last_seen} != rooms:
+            self.async_create_segments_issue()
 
     async def async_force_refresh(self) -> None:
         """Force refresh status and room data."""

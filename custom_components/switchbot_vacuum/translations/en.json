@@ -22,5 +22,33 @@
       "no_devices": "No SwitchBot Vacuum devices found in account",
       "cannot_connect": "Cannot connect to SwitchBot API"
     }
+  },
+  "entity": {
+    "select": {
+      "clean_type": {
+        "name": "Clean Type",
+        "state": {
+          "sweep": "Sweep",
+          "mop": "Mop",
+          "sweep_mop": "Sweep and Mop",
+          "first_sweep_then_mop": "Sweep then Mop"
+        }
+      },
+      "water_level": {
+        "name": "Water Level",
+        "state": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High"
+        }
+      },
+      "passes": {
+        "name": "Passes",
+        "state": {
+          "1": "1",
+          "2": "2"
+        }
+      }
+    }
   }
 }

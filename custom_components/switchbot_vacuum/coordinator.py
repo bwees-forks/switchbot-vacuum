@@ -21,6 +21,7 @@ from .const import (
     API_TIMEOUT,
     APP_VERSION,
     CLIENT_ID,
+    CMD_CHANGE_MODE,
     CONF_CACHED_ROOMS,
     CONF_DEVICE_MAC,
     CONF_PASSWORD,
@@ -245,6 +246,33 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
                 timeout=aiohttp.ClientTimeout(total=API_TIMEOUT),
             ) as resp:
                 return await resp.json()
+
+    def current_clean_mode(self) -> dict[str, Any]:
+        """Return the active clean mode, falling back to device defaults."""
+        mode = self.data.get("clean_mode", {}) if self.data else {}
+        if not isinstance(mode, dict):
+            mode = {}
+        return {
+            "fan_level": mode.get("fan_level", 1),
+            "times": mode.get("times", 1),
+            "type": mode.get("type", "sweep_mop"),
+            "water_level": mode.get("water_level", 1),
+        }
+
+    async def async_change_clean_mode(self, **overrides: Any) -> dict[str, Any]:
+        """Send a full clean mode, replacing only the given fields.
+
+        Function 1043 replaces the whole mode object, so unchanged fields have to be
+        sent back alongside the ones being changed.
+        """
+        mode = self.current_clean_mode() | {
+            k: v for k, v in overrides.items() if v is not None
+        }
+        result = await self.async_send_command(CMD_CHANGE_MODE, {"0": mode})
+        # Reflect the change immediately; the shadow can lag a poll behind.
+        self.async_set_updated_data((self.data or {}) | {"clean_mode": mode})
+        await self.async_request_refresh()
+        return result
 
     async def _get_product_key(self) -> str:
         """Return product_key from config entry or re-discover it."""
