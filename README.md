@@ -30,6 +30,7 @@ SwitchBot does not provide a public API for their robot vacuums. The official Sw
 - **Mop & sweep control** — dropdowns for clean type (`sweep`, `mop`, `sweep_mop`, `first_sweep_then_mop`), water level and passes, plus the same options per room clean
 - **Base station controls** — start/stop mop drying, trigger dust collection and mop wash
 - **Base station tracking** — dedicated mop drying and mop washing binary sensors, plus a status sensor that distinguishes drying, washing, dust collection and water refilling
+- **Map image** — the robot's own rendered map as an `image` entity, works with the stock picture card or `xiaomi-vacuum-map-card`
 - **Automatic room discovery** — room names are downloaded from the vacuum's S3 map data every 24 hours
 - **Multi-device support** — if your account has multiple SwitchBot vacuums, the config flow lets you pick which one to add
 - **Force refresh service** — manually re-download room data and device status on demand
@@ -272,6 +273,30 @@ data:
 The clean uses the vacuum's current clean mode — the `clean_type`, `water_level` and
 `passes` dropdowns plus the fan speed on the vacuum entity. Use
 `switchbot_vacuum.clean_rooms` instead when you want to override those per call.
+
+### Map (S10 family only)
+
+`image.<vacuum>_map` serves the map the robot itself renders, refreshed once a minute. Display it with the built-in picture card — no custom frontend needed:
+
+```yaml
+type: picture-entity
+entity: image.s10_map
+show_state: false
+show_name: false
+```
+
+The entity also publishes `calibration_points`, so it works as the map source for [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card) if you want zone selection:
+
+```yaml
+type: custom:xiaomi-vacuum-map-card
+entity: vacuum.s10
+map_source:
+  camera: image.s10_map
+calibration_source:
+  camera: true
+```
+
+Vacuum coordinates are metres. See [docs/map-format.md](docs/map-format.md) for the map format.
 
 ## Services
 

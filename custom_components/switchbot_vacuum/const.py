@@ -146,7 +146,9 @@ PROP_ONLINE: Final = 66
 PROP_BATTERY: Final = 1004
 PROP_WORK_STATUS: Final = 1010
 PROP_ERROR_CODE: Final = 1011
+PROP_MAP_ID: Final = 1023
 PROP_S3_BUCKET: Final = 1028
+PROP_S3_OBJECT: Final = 1029
 PROP_AWS_REGION: Final = 1031
 PROP_TASK_INFO: Final = 1032
 PROP_ROOM_PLANS: Final = 1038
@@ -337,8 +339,10 @@ OPERATIONAL_ERRORS: Final[dict[str, str]] = {
 
 # S3
 S3_REGION: Final = "eu-central-1"
+DEFAULT_S3_BUCKET: Final = "prod-eu-sweeper-origin"
 
 # Timings
 UPDATE_INTERVAL_SECONDS: Final = 30
 TOKEN_REFRESH_SECONDS: Final = 5400  # 1.5 hours
 ROOM_REFRESH_SECONDS: Final = 86400  # 24 hours
+MAP_REFRESH_SECONDS: Final = 60

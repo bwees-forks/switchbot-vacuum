@@ -17,6 +17,7 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.SWITCH,
     Platform.BUTTON,
+    Platform.IMAGE,
 ]
 
 _LOGGER = logging.getLogger(__name__)
