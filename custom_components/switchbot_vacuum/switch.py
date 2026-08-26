@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -19,11 +20,17 @@ from .const import (
     SELF_CLEAN_START_DRYING,
     SELF_CLEAN_STOP_DRYING,
     STATION_BUSY_STATUSES,
+    UPDATE_INTERVAL_SECONDS,
     WORK_STATUS_DRYING_MOP,
 )
 from .coordinator import SwitchBotS10Coordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+# The station takes several seconds to report the new working status, so a command's
+# expected result is held until the device either agrees or this window elapses. One
+# poll is guaranteed to land inside it.
+PENDING_TIMEOUT = UPDATE_INTERVAL_SECONDS + 5
 
 
 async def async_setup_entry(
@@ -54,30 +61,40 @@ class SwitchBotMopDryingSwitch(
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.device_mac)},
         )
+        self._pending: bool | None = None
+        self._pending_expiry: float = 0.0
+
+    @property
+    def _reported_on(self) -> bool:
+        """Return whether the device currently reports that it is drying."""
+        return self.coordinator.data.get("work_status") == WORK_STATUS_DRYING_MOP
 
     @property
     def is_on(self) -> bool:
         """Return True while the mop is being dried."""
-        return self.coordinator.data.get("work_status") == WORK_STATUS_DRYING_MOP
+        reported = self._reported_on
+        if self._pending is None:
+            return reported
+        if reported == self._pending or time.monotonic() >= self._pending_expiry:
+            self._pending = None
+            return reported
+        return self._pending
 
-    async def _async_self_clean(self, action: int, optimistic: int | None) -> None:
+    async def _async_self_clean(self, action: int, expected: bool) -> None:
         """Send a self-clean action, refusing while the station is mid-cycle."""
-        status = self.coordinator.data.get("work_status")
-        if status in STATION_BUSY_STATUSES:
+        if self.coordinator.data.get("work_status") in STATION_BUSY_STATUSES:
             raise HomeAssistantError(
                 "The base station is busy; wait for the current task to finish"
             )
         await self.coordinator.async_send_command(CMD_SELF_CLEANING, {"0": action})
-        if optimistic is not None:
-            self.coordinator.async_set_updated_data(
-                self.coordinator.data | {"work_status": optimistic}
-            )
-        await self.coordinator.async_request_refresh()
+        self._pending = expected
+        self._pending_expiry = time.monotonic() + PENDING_TIMEOUT
+        self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Start drying the mop."""
-        await self._async_self_clean(SELF_CLEAN_START_DRYING, WORK_STATUS_DRYING_MOP)
+        await self._async_self_clean(SELF_CLEAN_START_DRYING, True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Stop drying the mop."""
-        await self._async_self_clean(SELF_CLEAN_STOP_DRYING, None)
+        await self._async_self_clean(SELF_CLEAN_STOP_DRYING, False)
