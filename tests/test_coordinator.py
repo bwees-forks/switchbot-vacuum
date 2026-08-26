@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientSession
 
-from custom_components.switchbot_vacuum.coordinator import SwitchBotS10Coordinator
+from custom_components.switchbot_vacuum.coordinator import (
+    SwitchBotS10Coordinator,
+    _first_error_code,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -208,3 +211,25 @@ class TestSendCommand:
                 }},
             )
             assert result["resultCode"] == 100
+
+
+class TestErrorCodeNormalization:
+    """Test the error code property normalizer."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (0, 0),
+            (3001, 3001),
+            ([], 0),
+            ([0], 0),
+            ([3001], 3001),
+            ([0, 3001], 3001),
+            ([3001, 3002], 3001),
+            (None, 0),
+            ("3001", 0),
+        ],
+    )
+    def test_first_error_code(self, raw, expected):
+        """Test that list-valued error codes collapse to a single int."""
+        assert _first_error_code(raw) == expected

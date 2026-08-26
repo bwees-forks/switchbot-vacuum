@@ -77,6 +77,14 @@ K10PRO_STATUS_PROPS = [
 ]
 
 
+def _first_error_code(raw: Any) -> int:
+    """Normalize the error code property, which some firmwares report as a list."""
+    if isinstance(raw, list):
+        codes = [code for code in raw if isinstance(code, int) and code != 0]
+        return codes[0] if codes else 0
+    return raw if isinstance(raw, int) else 0
+
+
 class SwitchBotS10Coordinator(DataUpdateCoordinator):
     """Manage fetching data from SwitchBot Vacuum API."""
 
@@ -607,7 +615,7 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
             "online": props.get(PROP_ONLINE, False),
             "battery": props.get(PROP_BATTERY, 0),
             "work_status": props.get(PROP_WORK_STATUS, 1),
-            "error_code": props.get(PROP_ERROR_CODE, 0),
+            "error_code": _first_error_code(props.get(PROP_ERROR_CODE, 0)),
             "clean_mode": props.get(PROP_CLEAN_MODE, {}),
             "clean_summary": props.get(PROP_CLEAN_SUMMARY, {}),
             "firmware": props.get(PROP_FIRMWARE, ""),
