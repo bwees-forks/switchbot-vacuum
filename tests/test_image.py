@@ -9,11 +9,16 @@ from custom_components.switchbot_vacuum.image import SwitchBotVacuumMap
 from custom_components.switchbot_vacuum.map import SwitchBotMap
 
 
+def _png(width: int, height: int) -> bytes:
+    """Return bytes with a valid PNG signature and IHDR dimensions."""
+    return b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + width.to_bytes(4, "big") + height.to_bytes(4, "big")
+
+
 @pytest.fixture
 def sample_map():
     """Return a decoded map."""
     return SwitchBotMap(
-        image=b"first",
+        image=_png(400, 300),
         width=400,
         height=300,
         resolution=0.05,
@@ -47,13 +52,19 @@ class TestMapImage:
         """Test unique_id includes the device mac."""
         assert entity.unique_id == "AABBCCDDEEFF_map"
 
-    def test_content_type_is_png(self, entity):
-        """Test the entity advertises PNG."""
-        assert entity.content_type == "image/png"
+    def test_content_type_is_svg(self, entity):
+        """Test the entity advertises the rendered SVG."""
+        assert entity.content_type == "image/svg+xml"
 
     @pytest.mark.asyncio
-    async def test_image_empty_before_first_update(self, entity):
-        """Test no bytes are served until the coordinator has run."""
+    async def test_image_available_before_first_update(self, entity):
+        """Test a map already held by the coordinator is rendered on demand."""
+        assert (await entity.async_image()).startswith(b"<svg")
+
+    @pytest.mark.asyncio
+    async def test_image_empty_without_map(self, entity, mock_coordinator):
+        """Test nothing is served before any map exists."""
+        mock_coordinator.map = None
         assert await entity.async_image() is None
 
     @pytest.mark.asyncio
@@ -61,7 +72,9 @@ class TestMapImage:
         """Test the coordinator's map bytes are served."""
         with patch.object(entity, "async_write_ha_state"):
             entity._handle_coordinator_update()
-        assert await entity.async_image() == b"first"
+        served = await entity.async_image()
+        assert served.startswith(b"<svg")
+        assert b"data:image/png;base64," in served
 
     def test_timestamp_bumps_only_on_change(self, entity, mock_coordinator, sample_map):
         """Test image_last_updated tracks changes rather than every refresh."""
@@ -72,7 +85,7 @@ class TestMapImage:
             assert entity.image_last_updated == first
 
             mock_coordinator.map = SwitchBotMap(
-                image=b"second",
+                image=_png(401, 300),
                 width=sample_map.width,
                 height=sample_map.height,
                 resolution=sample_map.resolution,

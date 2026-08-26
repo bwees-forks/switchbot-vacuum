@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, K10_FAMILY_DEVICE_TYPES
 from .coordinator import SwitchBotS10Coordinator
+from .map import render_svg
 
 
 async def async_setup_entry(
@@ -30,7 +31,7 @@ async def async_setup_entry(
 class SwitchBotVacuumMap(CoordinatorEntity[SwitchBotS10Coordinator], ImageEntity):
     """The vacuum's current map, as rendered by the robot itself."""
 
-    _attr_content_type = "image/png"
+    _attr_content_type = "image/svg+xml"
     _attr_name = "Map"
     _entity_component_unrecorded_attributes = frozenset({"calibration_points", "rooms"})
 
@@ -42,20 +43,25 @@ class SwitchBotVacuumMap(CoordinatorEntity[SwitchBotS10Coordinator], ImageEntity
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.device_mac)},
         )
-        self._image: bytes | None = None
+        self._source: bytes | None = None
+        self._rendered: bytes | None = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Bump the image timestamp only when the map bytes actually changed."""
+        """Re-render only when the robot's raster actually changed."""
         current = self.coordinator.map
-        if current is not None and current.image != self._image:
-            self._image = current.image
+        if current is not None and current.image != self._source:
+            self._source = current.image
+            self._rendered = render_svg(current)
             self._attr_image_last_updated = dt_util.utcnow()
         super()._handle_coordinator_update()
 
     async def async_image(self) -> bytes | None:
-        """Return the current map PNG."""
-        return self._image
+        """Return the styled map."""
+        if self._rendered is None and self.coordinator.map is not None:
+            self._source = self.coordinator.map.image
+            self._rendered = render_svg(self.coordinator.map)
+        return self._rendered
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
